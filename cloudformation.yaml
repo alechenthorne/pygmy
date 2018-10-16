@@ -178,3 +178,5 @@ Resources:
       DomainName: !Ref PygmyDomainName
       RestApiId: !Ref PygmyAPI
       Stage: v1
+Outputs:
+    CloudfrontEndpoint: !GetAtt PygmyDomainName.DistributionDomainName
