@@ -1,0 +1,180 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Template to generate a url shortener
+Parameters: 
+  RootUrl: 
+    Description: URL to redirect root get request
+    Type: String
+  DomainName:
+    Description: API domain name
+    Type: String
+Resources: 
+  PygmyDB:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - 
+          AttributeName: "url_id"
+          AttributeType: "S"
+      KeySchema:
+        - 
+          AttributeName: "url_id"
+          KeyType: "HASH"
+      ProvisionedThroughput: 
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 1
+  GetUrlShorten:
+    Type: AWS::Lambda::Function
+    Properties:
+      MemorySize: 128
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Handler: get_url_shorten.lambda_handler
+      Runtime: python3.6 
+      Timeout: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref PygmyDB
+          ROOT_URL: !Ref RootUrl
+      Code:
+        S3Bucket: pygmy-resources
+        S3Key: pygmy-lambda-get.zip
+  PostUrlShorten:
+    Type: AWS::Lambda::Function
+    Properties:
+      MemorySize: 128
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Handler: post_url_shorten.lambda_handler
+      Runtime: python3.6 
+      Timeout: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref PygmyDB
+          BASE_URL: !Sub
+          - "https://${baseUrl}/"
+          - baseUrl: !Ref DomainName
+      Code:
+        S3Bucket: pygmy-resources
+        S3Key: pygmy-lambda-post.zip
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:*
+            Resource: arn:aws:logs:*:*:*
+          - Effect: Allow
+            Action:
+            - dynamodb:*
+            Resource: !GetAtt PygmyDB.Arn
+  PygmyAPI:
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Name: "PygmyAPI"
+  PygmyAPIGet:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: "NONE"
+      HttpMethod: "GET"
+      Integration:
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt GetUrlShorten.Arn
+      ResourceId: !GetAtt PygmyAPI.RootResourceId
+      RestApiId: !Ref PygmyAPI
+  PygmyAPIGetInvoke:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt GetUrlShorten.Arn
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PygmyAPI}/*/GET/"
+  PygmyAPIProxyGetInvoke:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt GetUrlShorten.Arn
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PygmyAPI}/*/GET/{url_id}"
+  PygmyAPIPost:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: "NONE"
+      HttpMethod: "POST"
+      Integration:
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt PostUrlShorten.Arn
+      ResourceId: !GetAtt PygmyAPI.RootResourceId
+      RestApiId: !Ref PygmyAPI
+  PygmyAPIPostInvoke:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt PostUrlShorten.Arn
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PygmyAPI}/*/POST/"
+  PygmyAPIProxy:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PygmyAPI
+      ParentId: !GetAtt [PygmyAPI, RootResourceId]
+      PathPart: '{url_id}'
+  PygmyAPIProxyGet:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+      - PygmyAPIProxy
+    Properties:
+      RestApiId: !Ref PygmyAPI
+      ResourceId: !Ref PygmyAPIProxy
+      HttpMethod: GET      
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 
+        - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+        - lambdaArn: !GetAtt GetUrlShorten.Arn
+  PygmyDeployment: 
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - PygmyAPIGet
+      - PygmyAPIPost
+      - PygmyAPIProxyGet
+    Properties: 
+      RestApiId: !Ref PygmyAPI
+      Description: Production deployment
+      StageName: v1
+  PygmyDomainCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+  PygmyDomainName:
+    Type: AWS::ApiGateway::DomainName
+    Properties:
+      CertificateArn: !Ref PygmyDomainCertificate
+      DomainName: !Ref DomainName
+  PygmyDomainMapping:
+    Type: AWS::ApiGateway::BasePathMapping
+    Properties:
+      DomainName: !Ref PygmyDomainName
+      RestApiId: !Ref PygmyAPI
+      Stage: v1
